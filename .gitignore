@@ -1,0 +1,19 @@
+# Snakemake working directory
+.snakemake/
+
+# Results and generated outputs
+results/
+
+# Raw sequencing data
+raw_data_exercise_20260218/
+
+# Conda environments
+conda/
+*.snakemake-conda*
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.out

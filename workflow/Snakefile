@@ -1,20 +1,24 @@
-samples = ["SRR15618897", "SRR15618896"]
-input_path = "/home/ahmed.isiaka/raw_data_exercise_20250219"
+########################################
+# Load configuration
+########################################
+configfile: "config/config.yaml"
 
+samples = config["samples"]
+input_path = config["input_path"]
+
+
+########################################
+# Include rule files
+########################################
+include: "rules/preprocess.smk"
+include: "rules/alignment.smk"
+include: "rules/count.smk"
+include: "rules/multiqc.smk"
+
+
+########################################
+# Final target
+########################################
 rule all:
     input:
-        expand("results/fastqc/{sample}_raw_fastqc.html",
-               sample=samples)
-
-rule fastqc:
-    input:
-        lambda wildcards: f"{input_path}/{wildcards.sample}_raw.fastq"
-    output:
-        html="results/fastqc/{sample}_raw_fastqc.html",
-        zip="results/fastqc/{sample}_raw_fastqc.zip"
-    conda:
-        "envs/rnaseq_preprocess.yaml"
-    shell:
-        """
-        fastqc {input} --outdir results/fastqc
-        """
+        "results/multiqc/multiqc_report.html"

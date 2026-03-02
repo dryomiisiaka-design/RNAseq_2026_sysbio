@@ -1,0 +1,255 @@
+---
+title: "Differential gene expression analysis"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    echo: true
+---
+
+```{r setup, include=FALSE}
+saveRDS(snakemake, ".deg.Rmd.RDS")
+
+library(data.table)
+library(DESeq2)
+library(ggplot2)
+library(reshape2)
+library(pheatmap)
+library(RColorBrewer)
+library(dplyr)
+library(tibble)
+library(fgsea)
+library(msigdbr)
+library(org.Mm.eg.db)
+
+# ----------------------------
+# Input data
+# Read merged count matrix
+count_matrix <- read.csv(
+  snakemake@input$counts,
+  row.names = 1,
+  check.names = FALSE
+)
+
+# Read samplesheet
+samplesheet <- fread(snakemake@input$samples)
+
+# Ensure phenotype factor and reference level
+samplesheet$phenotype <- relevel(
+  factor(samplesheet$phenotype),
+  ref = "WT"
+)
+
+# Match order between samples and counts
+rownames(samplesheet) <- samplesheet$ID
+samplesheet <- samplesheet[colnames(count_matrix), ]
+
+# ----------------------------
+# Create DESeq2 object
+# ----------------------------
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = samplesheet,
+  design = ~ phenotype
+)
+
+# Filter low-count genes
+keep <- rowSums(counts(dds) >= 10) >= 2
+dds <- dds[keep, ]
+
+dds <- estimateSizeFactors(dds, type = "poscounts")
+
+# ----------------------------
+# Raw counts distribution
+# ----------------------------
+
+melted_counts <- melt(as.matrix(counts(dds)),
+                      varnames = c("Gene", "ID"),
+                      value.name = "Count")
+
+ggplot(melted_counts, aes(x = ID, y = Count)) +
+  geom_boxplot(outlier.size = 0.2) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# ----------------------------
+# Variance stabilizing transformation
+# ----------------------------
+
+vsd <- vst(dds, blind = FALSE)
+
+melted_vsd_counts <- melt(as.matrix(assay(vsd)),
+                          varnames = c("Gene", "ID"),
+                          value.name = "Count")
+
+ggplot(melted_vsd_counts, aes(x = ID, y = Count)) +
+  geom_boxplot(outlier.size = 0.2) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# ----------------------------
+# Dispersion plot
+# ----------------------------
+
+plotDispEsts(dds)
+
+# ----------------------------
+# PCA
+# ----------------------------
+
+plotPCA(vsd, intgroup = "phenotype") +
+  theme_minimal() +
+  ggtitle("PCA of VST counts")
+
+# ----------------------------
+# Heatmap of top 500 variable genes
+# ----------------------------
+
+vars <- apply(assay(vsd), 1, var)
+top <- names(sort(vars, decreasing = TRUE))[1:500]
+mat <- assay(vsd)[top, ]
+
+ann_col <- as.data.frame(colData(vsd)[, "phenotype", drop = FALSE])
+
+pheatmap(mat,
+         scale = "row",
+         show_rownames = FALSE,
+         annotation_col = ann_col,
+         main = "Top 500 most variable genes",
+         cluster_cols = FALSE)
+
+# ----------------------------
+# Sample distance heatmap
+# ----------------------------
+
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+
+rownames(sampleDistMatrix) <- colnames(vsd)
+colnames(sampleDistMatrix) <- colnames(vsd)
+
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+
+# ----------------------------
+# Differential expression
+# ----------------------------
+
+dds <- DESeq(dds)
+
+res <- results(dds, contrast = c("phenotype", "CHD8_KO", "WT"))
+res <- res[order(res$padj), ]
+
+summary(res)
+
+resLFC <- lfcShrink(dds,
+                    contrast = c("phenotype", "CHD8_KO", "WT"),
+                    type = "apeglm")
+
+# ----------------------------
+# MA Plot
+# ----------------------------
+
+plotMA(resLFC, ylim = c(-5,5))
+
+# ----------------------------
+# Significance summary
+# ----------------------------
+
+cat("Significant genes (padj < 0.05): ",
+    sum(res$padj < 0.05, na.rm = TRUE), "\n")
+
+cat("Upregulated genes: ",
+    sum(res$padj < 0.05 & res$log2FoldChange > 0, na.rm = TRUE), "\n")
+
+cat("Downregulated genes: ",
+    sum(res$padj < 0.05 & res$log2FoldChange < 0, na.rm = TRUE), "\n")
+
+# ----------------------------
+# Top 10 genes
+# ----------------------------
+
+top_genes <- head(resLFC[order(resLFC$padj), ], 10)
+top_genes
+
+par(mfrow = c(3,3))
+for(i in 1:min(9, nrow(top_genes))){
+  plotCounts(dds,
+             gene = rownames(top_genes)[i],
+             intgroup = "phenotype")
+}
+par(mfrow = c(1,1))
+
+# ----------------------------
+# Volcano plot
+# ----------------------------
+
+res_df <- as.data.frame(res)
+res_df <- res_df[!is.na(res_df$padj), ]
+
+plot(res_df$log2FoldChange,
+     -log10(res_df$pvalue),
+     pch = 20,
+     main = "Volcano plot",
+     xlim = c(-3,3))
+
+sig <- res_df$padj < 0.05
+points(res_df$log2FoldChange[sig],
+       -log10(res_df$pvalue[sig]),
+       col = "blue",
+       pch = 20)
+
+# ----------------------------
+# GSEA
+# ----------------------------
+
+msig_mouse <- msigdbr(species = "Mus musculus",
+                      category = "C5") %>%
+  select(gs_name, ensembl_gene) %>%
+  filter(!is.na(ensembl_gene), ensembl_gene != "") %>%
+  distinct()
+
+pathways <- split(msig_mouse$ensembl_gene,
+                  msig_mouse$gs_name)
+
+rank_tbl <- as.data.frame(resLFC)
+rank_tbl$ENSEMBL <- rownames(rank_tbl)
+
+ranks <- rank_tbl$log2FoldChange
+names(ranks) <- rank_tbl$ENSEMBL
+ranks <- ranks[!is.na(ranks)]
+ranks <- sort(ranks, decreasing = TRUE)
+
+set.seed(1)
+fg <- fgsea(pathways = pathways,
+            stats = ranks,
+            minSize = 15,
+            maxSize = 500) %>%
+      as_tibble() %>%
+      arrange(padj)
+
+head(fg[, c("pathway", "NES", "pval", "padj")], 20)
+
+# ----------------------------
+# Save DEG results
+# ----------------------------
+
+dir.create("results/DEG", recursive = TRUE, showWarnings = FALSE)
+
+write.csv(as.data.frame(res),
+          "results/DEG/DESeq2_results_full.csv")
+
+write.csv(as.data.frame(resLFC),
+          "results/DEG/DESeq2_results_shrunken.csv")
+
+write.csv(as.data.frame(top_genes),
+          "results/DEG/top10_genes.csv")
+
+write.csv(as.data.frame(fg),
+          "results/DEG/GSEA_results.csv")

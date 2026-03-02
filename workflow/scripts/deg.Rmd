@@ -1,0 +1,210 @@
+---
+title: "DEG Analysis"
+output: html_document
+---
+
+```{r, message=FALSE, warning=FALSE}
+############################################################
+# Differential Gene Expression Analysis (DESeq2)
+############################################################
+
+library(DESeq2)
+library(tidyverse)
+library(pheatmap)
+library(EnhancedVolcano)
+
+knitr::opts_chunk$set(echo = TRUE)
+
+############################################################
+# Input files
+############################################################
+
+count_file  <- "results/counts/count_matrix.csv"
+sample_file <- "samplesheet.csv"
+
+############################################################
+# Load count matrix
+############################################################
+
+counts <- read.csv(
+  count_file,
+  row.names = 1,
+  check.names = FALSE
+)
+
+# ensure unique gene IDs
+rownames(counts) <- make.unique(rownames(counts))
+
+############################################################
+# REMOVE EMPTY SAMPLES
+############################################################
+
+sample_totals <- colSums(counts)
+
+cat("Library sizes:\n")
+print(sample_totals)
+
+counts <- counts[, sample_totals > 10, drop = FALSE]
+
+if (ncol(counts) < 2) {
+  stop("Not enough samples with counts for DE analysis")
+}
+
+############################################################
+# Load metadata
+############################################################
+
+samplesheet <- read.csv(
+  sample_file,
+  row.names = 1,
+  check.names = FALSE
+)
+
+############################################################
+# CLEAN SAMPLE NAMES
+############################################################
+
+clean_names <- function(x){
+  x <- trimws(x)
+  x <- gsub("\\.bam$|\\.fastq$|\\.fq$|\\.txt$", "", x)
+  return(x)
+}
+
+colnames(counts)      <- clean_names(colnames(counts))
+rownames(samplesheet) <- clean_names(rownames(samplesheet))
+
+############################################################
+# Match samples safely
+############################################################
+
+common_samples <- intersect(
+  colnames(counts),
+  rownames(samplesheet)
+)
+
+if(length(common_samples) == 0){
+  stop("No matching samples between count matrix and samplesheet")
+}
+
+counts <- counts[, common_samples, drop = FALSE]
+samplesheet <- samplesheet[common_samples, , drop = FALSE]
+
+############################################################
+# Condition factor
+############################################################
+
+if(!"condition" %in% colnames(samplesheet)){
+  stop("samplesheet must contain a column named 'condition'")
+}
+
+samplesheet$condition <- factor(samplesheet$condition)
+
+############################################################
+# CHECK CONDITION BALANCE
+############################################################
+
+cat("Samples per condition:\n")
+print(table(samplesheet$condition))
+
+if(length(unique(samplesheet$condition)) < 2){
+  stop(
+    "Only one condition remains after filtering.\n",
+    "Check count matrix or samplesheet."
+  )
+}
+
+############################################################
+# FINAL ALIGNMENT CHECK
+############################################################
+
+stopifnot(
+  identical(colnames(counts),
+            rownames(samplesheet))
+)
+
+############################################################
+# DESeq2 analysis
+############################################################
+
+dds <- DESeqDataSetFromMatrix(
+  countData = counts,
+  colData   = samplesheet,
+  design    = ~ condition
+)
+
+# Gene filtering
+dds <- dds[rowSums(counts(dds)) >= 20, ]
+
+if(nrow(dds) == 0){
+  stop("All genes filtered out — lower filtering threshold.")
+}
+
+# Run DESeq2
+dds <- DESeq(dds, sfType = "poscounts")
+
+res <- results(dds)
+res <- res[order(res$padj), ]
+
+############################################################
+# Save results
+############################################################
+
+dir.create(
+  "results/DEG",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+write.csv(
+  as.data.frame(res),
+  "results/DEG/deseq2_results.csv"
+)
+
+############################################################
+# Variance Stabilizing Transformation
+############################################################
+
+vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
+
+############################################################
+# PCA plot
+############################################################
+
+pca_plot <- plotPCA(vsd, intgroup = "condition")
+print(pca_plot)
+
+############################################################
+# Heatmap of top genes
+############################################################
+
+res_df <- as.data.frame(res)
+res_df <- res_df[!is.na(res_df$padj), ]
+
+top_n <- min(30, nrow(res_df))
+topgenes <- rownames(res_df)[1:top_n]
+
+mat <- assay(vsd)[topgenes, , drop = FALSE]
+mat <- mat - rowMeans(mat)
+
+pheatmap(
+  mat,
+  annotation_col = samplesheet,
+  show_rownames = FALSE
+)
+
+############################################################
+# Volcano plot
+############################################################
+
+EnhancedVolcano(
+  res_df,
+  lab = rownames(res_df),
+  x = "log2FoldChange",
+  y = "padj",
+  pCutoff = 0.05,
+  FCcutoff = 1
+)
+
+############################################################
+# END
+############################################################

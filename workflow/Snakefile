@@ -1,24 +1,130 @@
-########################################
-# Load configuration
-########################################
-configfile: "config/config.yaml"
+############################################
+# RNA-seq pipeline — SINGLE FILE VERSION
+############################################
 
-samples = config["samples"]
-input_path = config["input_path"]
+SAMPLES = [
+    "SRR15618896",
+    "SRR15618897",
+    "SRR15618898",
+    "SRR15618899",
+    "SRR15618900"
+]
 
+GENOME = "resources/genome.fa"
+GTF = "resources/annotation.gtf"
 
-########################################
-# Include rule files
-########################################
-include: "rules/preprocess.smk"
-include: "rules/alignment.smk"
-include: "rules/count.smk"
-include: "rules/multiqc.smk"
-
-
-########################################
-# Final target
-########################################
+############################################
+# FINAL TARGET
+############################################
 rule all:
     input:
-        "results/multiqc/multiqc_report.html"
+        "results/DEG/DEG_report.html"
+
+############################################
+# STAR index
+############################################
+rule star_index:
+    input:
+        GENOME,
+        GTF
+    output:
+        directory("resources/star_index")
+    shell:
+        """
+        STAR --runThreadN 4 \
+             --runMode genomeGenerate \
+             --genomeDir {output} \
+             --genomeFastaFiles {input[0]} \
+             --sjdbGTFfile {input[1]}
+        """
+
+############################################
+# Alignment
+############################################
+rule align:
+    input:
+        index="resources/star_index",
+        r1="data/{sample}_1.fastq.gz",
+        r2="data/{sample}_2.fastq.gz"
+    output:
+        bam="results/bam/{sample}.bam"
+    shell:
+        """
+        STAR --runThreadN 4 \
+             --genomeDir {input.index} \
+             --readFilesIn {input.r1} {input.r2} \
+             --readFilesCommand zcat \
+             --outSAMtype BAM SortedByCoordinate \
+             --outFileNamePrefix results/bam/{wildcards.sample}_
+
+        mv results/bam/{wildcards.sample}_Aligned.sortedByCoord.out.bam {output.bam}
+        """
+
+############################################
+# featureCounts
+############################################
+rule featureCounts:
+    input:
+        bam="results/bam/{sample}.bam",
+        gtf=GTF
+    output:
+        "results/counts/{sample}.featureCounts.txt"
+    shell:
+        """
+        featureCounts \
+            -T 4 \
+            -p \
+            -t exon \
+            -g gene_id \
+            -a {input.gtf} \
+            -o {output} \
+            {input.bam}
+        """
+
+############################################
+# MERGE COUNTS
+############################################
+rule merge_counts:
+    input:
+        expand("results/counts/{sample}.featureCounts.txt", sample=SAMPLES)
+    output:
+        "results/counts/count_matrix.csv"
+    run:
+        import pandas as pd
+        import os
+
+        merged = None
+
+        for f in input:
+            sample = os.path.basename(f).replace(".featureCounts.txt", "")
+
+            df = pd.read_csv(
+                f,
+                sep="\t",
+                comment="#"
+            )
+
+            df = df.iloc[:, [0, -1]]
+            df.columns = ["Geneid", sample]
+            df = df.set_index("Geneid")
+
+            if merged is None:
+                merged = df
+            else:
+                merged = merged.join(df, how="outer")
+
+        merged.fillna(0).astype(int).to_csv(output[0])
+
+############################################
+# DIFFERENTIAL EXPRESSION (DESeq2)
+############################################
+rule deg:
+    input:
+        counts="results/counts/count_matrix.csv",
+        samplesheet="samplesheet.csv"
+    output:
+        "results/DEG/DEG_report.html"
+    conda:
+        "envs/deg.yaml"
+    script:
+        "scripts/deg.Rmd"

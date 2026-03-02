@@ -5,8 +5,6 @@ samples:
   - SRR15618899
   - SRR15618900
 
-samplesheet: "samplesheet.tsv"
-
 input_path: "/opt/students/ahmed.isiaka/raw_data_exercise_20260218"
 
 genome_index_dir: "/opt/shared/SYSBIO/Mus_musculus.GRCm39/genome"

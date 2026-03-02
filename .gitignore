@@ -1,19 +1,35 @@
-# Snakemake working directory
+# snakemake
 .snakemake/
+snakemake_conda_envs/
 
-# Results and generated outputs
+# environments
+envs/
+
+# sequencing data
+*.fastq
+*.fastq.gz
+*.bam
+*.sam
+
+# run folders
+SRR*/
+data/
+resources/
+
+# results
 results/
 
-# Raw sequencing data
-raw_data_exercise_20260218/
+# plots
+*.pdf
+Rplots.pdf
 
-# Conda environments
-conda/
-*.snakemake-conda*
+# R temporary files
+.Rhistory
+.RData
+*.RDS
 
-# Logs
-*.log
+# backups
+*.save
 
-# Temporary files
-*.tmp
-*.out
+# system
+.DS_Store
